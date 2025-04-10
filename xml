@@ -1,0 +1,106 @@
+import pandas as pd
+from lxml import etree
+from openpyxl import Workbook
+from openpyxl.utils.dataframe import dataframe_to_rows
+
+def parse_define_xml(xml_path, excel_path):
+    # 解析XML命名空间
+    namespaces = {
+        'ns': 'http://www.cdisc.org/ns/def/v2.0',
+        'odm': 'http://www.cdisc.org/ns/odm/v1.3'
+    }
+
+    # 解析XML文件
+    tree = etree.parse(xml_path)
+    root = tree.getroot()
+
+    # 创建Excel工作簿
+    wb = Workbook()
+    wb.remove(wb.active)  # 移除默认工作表
+
+    # 解析数据集列表 --------------------------------------------------------
+    datasets = []
+    for item in root.xpath('//ns:ItemGroupDef', namespaces=namespaces):
+        datasets.append({
+            "Dataset": item.get("Name"),
+            "Description": item.find('odm:Description/odm:TranslatedText', namespaces).text,
+            "Class": item.get("Class"),
+            "Structure": item.get("Structure"),
+            "OID": item.get("OID")
+        })
+    df_datasets = pd.DataFrame(datasets)
+    ws_datasets = wb.create_sheet("Datasets")
+    for r in dataframe_to_rows(df_datasets, index=False, header=True):
+        ws_datasets.append(r)
+
+    # 解析变量元数据 --------------------------------------------------------
+    variables = []
+    for item in root.xpath('//ns:ItemDef', namespaces=namespaces):
+        var = {
+            "Variable Name": item.get("Name"),
+            "Label": item.find('odm:Description/odm:TranslatedText', namespaces).text,
+            "Type": item.get("DataType"),
+            "Length": item.get("Length"),
+            "Role": item.get("Role"),
+            "Mandatory": item.get("Mandatory", "No"),
+            "Origin": "",
+            "Comments": "",
+            "Controlled Terms": ""
+        }
+
+        # 处理受控术语
+        codelist = item.find('ns:CodeListRef', namespaces)
+        if codelist is not None:
+            var["Controlled Terms"] = codelist.get("CodeListOID")
+
+        variables.append(var)
+
+    df_vars = pd.DataFrame(variables)
+    ws_vars = wb.create_sheet("Variables")
+    for r in dataframe_to_rows(df_vars, index=False, header=True):
+        ws_vars.append(r)
+
+    # 解析受控术语 ---------------------------------------------------------
+    codelists = []
+    for cl in root.xpath('//odm:CodeList', namespaces=namespaces):
+        cl_data = {
+            "OID": cl.get("OID"),
+            "Name": cl.get("Name"),
+            "DataType": cl.get("DataType"),
+            "Terms": ""
+        }
+        
+        terms = []
+        for term in cl.xpath('./odm:CodeListItem', namespaces):
+            terms.append(f"{term.get('CodedValue')} = {term.find('odm:Decode/odm:TranslatedText', namespaces).text}")
+        
+        cl_data["Terms"] = "\n".join(terms)
+        codelists.append(cl_data)
+
+    df_cl = pd.DataFrame(codelists)
+    ws_cl = wb.create_sheet("CodeLists")
+    for r in dataframe_to_rows(df_cl, index=False, header=True):
+        ws_cl.append(r)
+
+    # 格式调整 ------------------------------------------------------------
+    for sheet in wb.worksheets:
+        # 设置列宽
+        for column in sheet.columns:
+            max_length = 0
+            column = [cell for cell in column]
+            for cell in column:
+                try:
+                    if len(str(cell.value)) > max_length:
+                        max_length = len(cell.value)
+                except:
+                    pass
+            adjusted_width = (max_length + 2) * 1.2
+            sheet.column_dimensions[column[0].column_letter].width = adjusted_width
+
+        # 添加筛选器
+        sheet.auto_filter.ref = sheet.dimensions
+
+    wb.save(excel_path)
+
+# 使用示例
+parse_define_xml("define.xml", "output_p21_style.xlsx")
